@@ -1,0 +1,7 @@
+doctor_name,ward,status,next_slot,slot_minutes
+Dr. Sharma,general,active,09:00,20
+Dr. Iyer,general,active,09:15,20
+Dr. Khan,emergency,active,08:30,10
+Dr. Rao,emergency,active,08:30,10
+Dr. Mehta,mental_health,active,10:00,30
+Dr. Gupta,mental_health,active,10:00,30
