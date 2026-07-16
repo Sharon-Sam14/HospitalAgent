@@ -1,17 +1,1 @@
-# AI Hospital Triage System — Python Dependencies
-# Pin major versions; exact pins recommended for Streamlit Cloud deployment
-
-# ── Web framework ─────────────────────────────────────────────
-streamlit>=1.35.0,<2.0.0
-
-# ── Database ──────────────────────────────────────────────────
-supabase>=2.4.0,<3.0.0
-
-# ── LLM / Agent ───────────────────────────────────────────────
-langchain>=0.2.0,<0.4.0
-langchain-groq>=0.1.6,<0.3.0
-langchain-core>=0.2.0,<0.4.0
-langgraph>=0.1.19,<0.3.0
-
-# ── Utilities ─────────────────────────────────────────────────
-python-dotenv>=1.0.0     # env var loading in seed.py / local dev
+streamlit
