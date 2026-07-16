@@ -122,8 +122,16 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 
 .stSelectbox>div>div {{
   background: var(--surface) !important; border: 1.5px solid var(--border) !important;
-  border-radius: var(--r) !important; color: var(--text) !important;
+  border-radius: var(--r) !important;
 }}
+.stSelectbox div[data-baseweb="select"] * {{
+  color: var(--text) !important;
+}}
+div[data-baseweb="popover"] * {{
+  color: var(--text) !important;
+  background-color: var(--surface) !important;
+}}
+
 
 .stButton>button,
 [data-testid="stFormSubmitButton"]>button {{
