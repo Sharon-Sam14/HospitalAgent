@@ -120,17 +120,20 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
   box-shadow: 0 0 0 3px rgba(15,118,110,.12) !important; outline: none !important;
 }}
 
+.stSelectbox * {{
+  color: var(--text) !important;
+}}
 .stSelectbox>div>div {{
   background: var(--surface) !important; border: 1.5px solid var(--border) !important;
   border-radius: var(--r) !important;
 }}
-.stSelectbox div[data-baseweb="select"] * {{
-  color: var(--text) !important;
+div[data-baseweb="popover"] {{
+  background-color: var(--surface) !important;
 }}
 div[data-baseweb="popover"] * {{
   color: var(--text) !important;
-  background-color: var(--surface) !important;
 }}
+
 
 
 .stButton>button,
