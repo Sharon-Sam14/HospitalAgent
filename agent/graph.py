@@ -26,14 +26,14 @@ def build_graph():
     # Register nodes
     builder.add_node("intake", intake_node)
     builder.add_node("router", router_node)
-    builder.add_node("ward", ward_node)
+    builder.add_node("ward_routing", ward_node)
     builder.add_node("doctor_assign", doctor_assign_node)
 
     # Linear edges
     builder.set_entry_point("intake")
     builder.add_edge("intake", "router")
-    builder.add_edge("router", "ward")
-    builder.add_edge("ward", "doctor_assign")
+    builder.add_edge("router", "ward_routing")
+    builder.add_edge("ward_routing", "doctor_assign")
     builder.add_edge("doctor_assign", END)
 
     return builder.compile()

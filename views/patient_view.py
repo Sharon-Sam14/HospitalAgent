@@ -12,6 +12,6 @@ import streamlit as st
 
 def render() -> None:
     """Called by app.py routing when patient view is selected."""
-    # Imported here to avoid circular dependency
-    from app import render_patient_view  # noqa: PLC0415
-    render_patient_view()
+    from app import patient_view  # noqa: PLC0415
+    patient_view()
+

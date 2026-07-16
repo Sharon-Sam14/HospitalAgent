@@ -12,5 +12,6 @@ import streamlit as st
 
 def render() -> None:
     """Called by app.py routing when doctor view is selected."""
-    from app import render_doctor_view  # noqa: PLC0415
-    render_doctor_view()
+    from app import doctor_view  # noqa: PLC0415
+    doctor_view()
+

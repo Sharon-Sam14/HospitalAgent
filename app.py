@@ -1,18 +1,29 @@
 """
 MediTriage — AI Hospital Triage System
-Frontend-only prototype: all data mocked in st.session_state.
+Real backend integration: Supabase database and LangGraph workflow.
 """
 from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
+from services.triage_service import run_triage
+from services.doctor_service import get_all_doctors, get_doctor_by_name, update_doctor_status
+from services.appointment_service import (
+    get_appointments_for_doctor,
+    get_done_appointments_for_doctor,
+    mark_appointment_done,
+    update_appointment_notes,
+)
+from database.client import get_client
+import config
+
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. PAGE CONFIG (First Command)
+# PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="MediTriage — AI Hospital Triage",
@@ -22,80 +33,12 @@ st.set_page_config(
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MOCK SEED DATA
-# ══════════════════════════════════════════════════════════════════════════════
-_DOCTORS = [
-    {"id": "d1", "name": "Dr. Sharma", "ward": "general", "specialization": "General Practice", "shift_start": "09:00", "shift_end": "17:00", "status": "free"},
-    {"id": "d2", "name": "Dr. Iyer", "ward": "general", "specialization": "Internal Medicine", "shift_start": "09:15", "shift_end": "17:15", "status": "busy"},
-    {"id": "d3", "name": "Dr. Khan", "ward": "emergency", "specialization": "Emergency Medicine", "shift_start": "08:30", "shift_end": "16:30", "status": "free"},
-    {"id": "d4", "name": "Dr. Rao", "ward": "emergency", "specialization": "Emergency Medicine", "shift_start": "08:30", "shift_end": "16:30", "status": "on_leave"},
-    {"id": "d5", "name": "Dr. Mehta", "ward": "mental_health", "specialization": "Psychiatry", "shift_start": "10:00", "shift_end": "18:00", "status": "free"},
-    {"id": "d6", "name": "Dr. Gupta", "ward": "mental_health", "specialization": "Clinical Psychology", "shift_start": "10:00", "shift_end": "18:00", "status": "busy"},
-]
-
-_APPOINTMENTS = [
-    {
-        "id": "a1",
-        "patient_name": "Arjun Mehta",
-        "age": 34,
-        "gender": "Male",
-        "query": "Severe chest pain radiating to left arm, sweating profusely",
-        "ward": "emergency",
-        "priority": "high",
-        "status": "in_progress",
-        "assigned_doctor_id": "d3",
-        "notes": "",
-        "created_at": datetime.now() - timedelta(minutes=15),
-    },
-    {
-        "id": "a2",
-        "patient_name": "Priya Nair",
-        "age": 27,
-        "gender": "Female",
-        "query": "Severe anxiety and panic attacks, feeling very overwhelmed",
-        "ward": "mental_health",
-        "priority": "normal",
-        "status": "waiting",
-        "assigned_doctor_id": "d5",
-        "notes": "",
-        "created_at": datetime.now() - timedelta(minutes=8),
-    },
-    {
-        "id": "a3",
-        "patient_name": "Ravi Kumar",
-        "age": 52,
-        "gender": "Male",
-        "query": "Persistent cough for 2 weeks, mild fever and fatigue",
-        "ward": "general",
-        "priority": "normal",
-        "status": "waiting",
-        "assigned_doctor_id": "d1",
-        "notes": "",
-        "created_at": datetime.now() - timedelta(minutes=3),
-    },
-]
-
-# ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-EMERGENCY_KW = {"chest pain", "can't breathe", "cannot breathe", "difficulty breathing",
-                "unconscious", "stroke", "seizure", "bleeding heavily", "heart attack",
-                "severe burn", "not breathing", "choking", "fracture", "broken bone"}
-CRISIS_KW = {"suicidal", "want to die", "self-harm", "self harm", "overdose",
-             "kill myself", "harm myself", "end my life", "dont want to live"}
-MENTAL_KW = {"anxiety", "panic", "depression", "depressed", "hallucination",
-             "bipolar", "ptsd", "trauma", "psychosis", "psychiatric"}
-
 WARD_LABELS = {"emergency": "Emergency", "mental_health": "Mental Health", "general": "General"}
 WARD_EMOJIS = {"emergency": "🚑", "mental_health": "🧠", "general": "🏥"}
 STATUS_LABELS = {"free": "Free", "busy": "Busy", "on_leave": "On Leave"}
 SPEC_MAP = {"general": "General Practice", "emergency": "Emergency Medicine", "mental_health": "Psychiatry"}
-
-WORD_NUM = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-            "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-            "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-            "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-            "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
 
 _ADMIN_USER = "admin"
 _ADMIN_PASS = "admin123"
@@ -108,8 +51,6 @@ def _init() -> None:
         "doctor": None,
         "admin": False,
         "triage_result": None,
-        "doctors": [dict(d) for d in _DOCTORS],
-        "appointments": [dict(a) for a in _APPOINTMENTS],
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -130,7 +71,6 @@ def _inject_css() -> None:
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-/* ─── CSS Variables ─────────────────────────────────────────── */
 :root {{
   --bg:{c['bg']};--surface:{c['surface']};--primary:{c['primary']};--primary-hover:{c['ph']};
   --accent:{c['accent']};--text:{c['text']};--muted:{c['muted']};--border:{c['border']};
@@ -138,13 +78,11 @@ def _inject_css() -> None:
   --sh:{c['sh']};--shadow:{c['shadow']};--r:8px;
 }}
 
-/* ─── Hide Streamlit chrome (Requirement 2) ─────────────────── */
 [data-testid="stHeader"] {{ background: transparent !important; }}
 footer {{ visibility: hidden !important; }}
 [data-testid="stToolbar"] {{ display:none!important }}
 [data-testid="stDecoration"] {{ display:none!important }}
 
-/* ─── Layout / block container (Requirement 2) ──────────────── */
 div.block-container {{
   padding-top: 2rem !important;
   padding-bottom: 2rem !important;
@@ -155,14 +93,12 @@ div.block-container {{
 .stApp, [data-testid="stAppViewContainer"],
 [data-testid="stMainBlockContainer"] {{ background: var(--bg) !important; }}
 
-/* ─── Sidebar ────────────────────────────────────────────────── */
 [data-testid="stSidebar"] {{
   background: var(--surface) !important;
   border-right: 1px solid var(--border) !important;
 }}
 [data-testid="stSidebar"] * {{ color: var(--text) !important; }}
 
-/* ─── Typography ─────────────────────────────────────────────── */
 html, body, [class*="css"] {{
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
 }}
@@ -170,7 +106,6 @@ p, li {{ color: var(--text); line-height: 1.65; }}
 h1, h2, h3, h4, h5, h6 {{ color: var(--text) !important; font-weight: 600 !important; }}
 label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 0.875rem !important; }}
 
-/* ─── Text inputs ────────────────────────────────────────────── */
 .stTextInput>div>div>input,
 .stTextArea>div>div>textarea,
 .stNumberInput>div>div>input {{
@@ -185,13 +120,11 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
   box-shadow: 0 0 0 3px rgba(15,118,110,.12) !important; outline: none !important;
 }}
 
-/* ─── Selectbox ──────────────────────────────────────────────── */
 .stSelectbox>div>div {{
   background: var(--surface) !important; border: 1.5px solid var(--border) !important;
   border-radius: var(--r) !important; color: var(--text) !important;
 }}
 
-/* ─── Buttons ────────────────────────────────────────────────── */
 .stButton>button,
 [data-testid="stFormSubmitButton"]>button {{
   background: var(--primary) !important; color: #fff !important; border: none !important;
@@ -208,7 +141,6 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 }}
 .stButton>button[kind="secondary"]:hover {{ background: var(--sh) !important; }}
 
-/* ─── Expander ───────────────────────────────────────────────── */
 [data-testid="stExpander"] {{
   background: var(--surface) !important; border: 1px solid var(--border) !important;
   border-radius: var(--r) !important;
@@ -217,7 +149,6 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 [data-testid="stExpander"] summary p {{ color: var(--text) !important; }}
 [data-testid="stExpander"] summary:hover {{ background: var(--sh) !important; }}
 
-/* ─── Data Editor ────────────────────────────────────────────── */
 [data-testid="stDataFrame"],
 [data-testid="stDataEditor"] {{
   border-radius: var(--r) !important;
@@ -225,15 +156,11 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
   overflow: hidden !important;
 }}
 
-/* ─── Container with border ──────────────────────────────────── */
 [data-testid="stVerticalBlockBorderWrapper"] {{
   border: 1px solid var(--border) !important; border-radius: var(--r) !important;
   background: var(--surface) !important; box-shadow: var(--shadow) !important;
 }}
 
-/* ════════════════ CUSTOM HTML COMPONENTS ════════════════════════ */
-
-/* Cards (Rounded corners + soft shadows) */
 .card {{
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 1.25rem;
@@ -248,7 +175,6 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 .card.hp {{ border-left: 4px solid var(--danger); }}
 .card.np {{ border-left: 4px solid var(--info); }}
 
-/* Card internals */
 .card-row {{ display: flex; justify-content: space-between; align-items: flex-start;
              flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem; }}
 .c-name {{ font-size: 1rem; font-weight: 600; color: var(--text) !important; margin: 0.2rem 0 0.1rem; }}
@@ -257,16 +183,14 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }}
 .c-time {{ font-size: 0.72rem; color: var(--muted) !important; }}
 
-/* Stat cards */
 .stat {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
          padding: 1rem 1.25rem; text-align: center; box-shadow: var(--shadow); }}
 .sv   {{ font-size: 2rem; font-weight: 700; color: var(--primary) !important; margin: 0; line-height: 1; }}
 .sl   {{ font-size: 0.7rem; color: var(--muted) !important; margin: 0.3rem 0 0;
          text-transform: uppercase; letter-spacing: 0.5px; }}
 
-/* Badges */
 .badge {{ display: inline-flex; align-items: center; gap: 3px; padding: 3px 10px;
-          border-radius: 999px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; }}
+           border-radius: 999px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; }}
 .bs {{ background: rgba(22,163,74,0.12); color: var(--success); border: 1px solid rgba(22,163,74,0.3); }}
 .bw {{ background: rgba(217,119,6,0.12); color: var(--warning); border: 1px solid rgba(217,119,6,0.3); }}
 .bd {{ background: rgba(220,38,38,0.12); color: var(--danger); border: 1px solid rgba(220,38,38,0.3); }}
@@ -275,7 +199,6 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 .bm {{ background: rgba(71,85,105,0.12); color: var(--muted); border: 1px solid rgba(71,85,105,0.3); }}
 .bp {{ background: rgba(15,118,110,0.12); color: var(--primary); border: 1px solid rgba(15,118,110,0.3); }}
 
-/* Disclaimer banner (info-colored) */
 .disclaimer {{
   background: rgba(2,132,199,0.07); border: 1px solid rgba(2,132,199,0.3);
   border-left: 4px solid var(--info); border-radius: 8px;
@@ -283,7 +206,6 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
   font-size: 0.875rem; font-weight: 500; margin-bottom: 1.25rem;
 }}
 
-/* Confirmation card */
 .c-ok {{ background: rgba(22,163,74,0.05); border: 1px solid rgba(22,163,74,0.25);
          border-radius: 8px; padding: 1.5rem; }}
 .c-q  {{ background: rgba(217,119,6,0.05); border: 1px solid rgba(217,119,6,0.25);
@@ -291,12 +213,10 @@ label {{ color: var(--text) !important; font-weight: 500 !important; font-size: 
 .c-ok h4, .c-q h4 {{ margin: 0 0 0.5rem; color: var(--text) !important; font-size: 1.05rem; }}
 .c-ok p, .c-q p {{ margin: 0.2rem 0; color: var(--text) !important; }}
 
-/* Empty state */
 .es {{ text-align: center; padding: 4rem 1rem; color: var(--muted); }}
 .esi {{ font-size: 3.5rem; margin-bottom: 0.75rem; display: block; }}
 .es p {{ color: var(--muted) !important; font-size: 1rem; }}
 
-/* ─── 3. Responsive @media Queries ───────────────────────────── */
 @media (max-width: 768px) {{
   div.block-container {{
     padding-left: 1rem !important;
@@ -328,73 +248,20 @@ def _sb(status: str) -> str:
     cm = {"free": "bs", "busy": "bw", "on_leave": "bm"}
     return _b(f"● {STATUS_LABELS.get(status,status)}", cm.get(status,"bm"))
 
-def _wait(t: datetime) -> str:
-    m = max(0, int((datetime.now() - t).total_seconds() / 60))
-    return f"{m}m ago" if m < 60 else f"{m//60}h {m%60}m ago"
-
-def _parse_age(raw: str) -> int:
-    raw = raw.strip()
-    try:
-        v = int(raw)
-        return v if 0 < v < 150 else 0
-    except ValueError:
-        tokens = raw.lower().replace("-", " ").split()
-        s = sum(WORD_NUM.get(t, 0) for t in tokens)
-        return s if 0 < s < 150 else 0
-
-def _mock_triage(name: str, raw_age: str, gender: str, query: str) -> dict:
-    q = query.lower()
-    ward, priority, reason = "general", "normal", "General symptoms — routed to general ward."
-
-    for kw in EMERGENCY_KW:
-        if kw in q:
-            ward, priority, reason = "emergency", "high", f"Emergency keyword detected: '{kw}'."
-            break
+def _wait(t: datetime | str) -> str:
+    if isinstance(t, str):
+        t = t.replace("Z", "+00:00")
+        try:
+            t = datetime.fromisoformat(t)
+        except ValueError:
+            return "unknown"
+    if t.tzinfo is not None:
+        from datetime import timezone
+        diff = datetime.now(timezone.utc) - t
     else:
-        for kw in CRISIS_KW:
-            if kw in q:
-                ward, priority, reason = "mental_health", "high", f"Crisis keyword: '{kw}'."
-                break
-        else:
-            for kw in MENTAL_KW:
-                if kw in q:
-                    ward, priority, reason = "mental_health", "normal", f"Mental health keyword: '{kw}'."
-                    break
-
-    age = _parse_age(raw_age)
-    free = [d for d in st.session_state.doctors if d["ward"] == ward and d["status"] == "free"]
-    doc = None
-    if free:
-        doc = free[0]
-        for d in st.session_state.doctors:
-            if d["id"] == doc["id"]:
-                d["status"] = "busy"
-
-    waiting = [a for a in st.session_state.appointments if a["ward"] == ward and a["status"] == "waiting"]
-    qpos = len(waiting) + 1 if not doc else None
-
-    aid = uuid.uuid4().hex[:8]
-    st.session_state.appointments.append({
-        "id": aid,
-        "patient_name": name,
-        "age": age,
-        "gender": gender,
-        "query": query,
-        "ward": ward,
-        "priority": priority,
-        "status": "in_progress" if doc else "waiting",
-        "assigned_doctor_id": doc["id"] if doc else None,
-        "notes": "",
-        "created_at": datetime.now(),
-        "reasoning": reason,
-    })
-    return {
-        "ward": ward,
-        "priority": priority,
-        "reasoning": reason,
-        "assigned_doctor": doc["name"] if doc else None,
-        "queue_position": qpos
-    }
+        diff = datetime.now() - t
+    m = max(0, int(diff.total_seconds() / 60))
+    return f"{m}m ago" if m < 60 else f"{m//60}h {m%60}m ago"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SHARED HEADER
@@ -422,7 +289,6 @@ def patient_view() -> None:
             st.rerun()
         return
 
-    # Center form layout using columns
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.container(border=True):
@@ -446,11 +312,20 @@ def patient_view() -> None:
             st.error("Please fill in all required fields: Name, Age, and Symptoms.")
         else:
             with st.spinner("Routing to the right ward..."):
-                time.sleep(1)
-            result = _mock_triage(name.strip(), raw_age.strip(), gender, query.strip())
-            st.session_state.triage_result = result
-            st.toast("Patient submitted successfully!")
-            st.rerun()
+                form_data = {
+                    "patient_name": name.strip(),
+                    "raw_age": raw_age.strip(),
+                    "gender": gender,
+                    "query": query.strip(),
+                }
+                result = run_triage(form_data)
+            
+            if result.get("success"):
+                st.session_state.triage_result = result
+                st.toast("Patient submitted successfully!")
+                st.rerun()
+            else:
+                st.error(f"Triage failed: {result.get('error', 'Unknown error')}")
 
 def _show_confirmation(result: dict) -> None:
     ward, priority = result["ward"], result["priority"]
@@ -464,15 +339,15 @@ def _show_confirmation(result: dict) -> None:
 <div class="c-ok">
   <h4>✅ Triage Result: Assigned</h4>
   <div style="margin-bottom:.65rem">{wb} &nbsp; {pb}</div>
-  <p>Assigned to <strong>{doc}</strong> in the <strong>{WARD_LABELS[ward]}</strong> ward.</p>
-  <p style="font-size:.85rem;color:var(--muted)!important">Please proceed to receptionist in ward {WARD_EMOJIS[ward]} {WARD_LABELS[ward]}.</p>
+  <p>Assigned to <strong>{doc}</strong> in the <strong>{WARD_LABELS.get(ward, ward)}</strong> ward.</p>
+  <p style="font-size:.85rem;color:var(--muted)!important">Please proceed to receptionist in ward {WARD_EMOJIS.get(ward,'')} {WARD_LABELS.get(ward, ward)}.</p>
 </div>""", unsafe_allow_html=True)
         else:
             st.markdown(f"""
 <div class="c-q">
   <h4>⏳ Triage Result: Waitlisted</h4>
   <div style="margin-bottom:.65rem">{wb} &nbsp; {pb}</div>
-  <p>No doctor is currently free in <strong>{WARD_LABELS[ward]}</strong>. Status: <strong>Waitlisted</strong> (Queue Position #{qpos}).</p>
+  <p>No doctor is currently free in <strong>{WARD_LABELS.get(ward, ward)}</strong>. Status: <strong>Waitlisted</strong> (Queue Position #{qpos}).</p>
   <p style="font-size:.85rem;color:var(--muted)!important">Please take a seat in the waiting hall.</p>
 </div>""", unsafe_allow_html=True)
 
@@ -501,7 +376,6 @@ def doctor_view() -> None:
             st.toast("Signed out.")
             st.rerun()
 
-    # Status Selector and Indicator next to each other
     st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
     opts = ["Free", "Busy", "On Leave"]
     fwd = {"Free": "free", "Busy": "busy", "On Leave": "on_leave"}
@@ -513,23 +387,23 @@ def doctor_view() -> None:
         nl = st.radio("Status Toggle", opts, index=opts.index(cur), horizontal=True, key="dr_status_r", label_visibility="collapsed")
         ns = fwd[nl]
         if ns != doc["status"]:
-            doc["status"] = ns
-            for d in st.session_state.doctors:
-                if d["id"] == doc["id"]:
-                    d["status"] = ns
-            st.session_state.doctor = doc
-            st.toast(f"Status updated → {nl}")
-            st.rerun()
+            if update_doctor_status(doc["doctor_id"], ns, changed_by=doc["name"]):
+                doc["status"] = ns
+                st.session_state.doctor = doc
+                st.toast(f"Status updated → {nl}")
+                st.rerun()
     with sc2:
         st.markdown(f'<div style="padding-top: 0.15rem;">{_sb(doc["status"])}</div>', unsafe_allow_html=True)
 
     st.divider()
 
-    # Stats counters row
-    my_all = [a for a in st.session_state.appointments if a.get("assigned_doctor_id") == doc["id"]]
-    queue_n = sum(1 for a in my_all if a["status"] in ("waiting", "in_progress"))
-    high_n = sum(1 for a in my_all if a["priority"] == "high" and a["status"] != "done")
-    done_n = sum(1 for a in my_all if a["status"] == "done")
+    # Load active appointments and history live
+    active_appointments = get_appointments_for_doctor(doc["doctor_id"])
+    done_appointments = get_done_appointments_for_doctor(doc["doctor_id"])
+
+    queue_n = len(active_appointments)
+    high_n = sum(1 for a in active_appointments if a["priority"] == "high")
+    done_n = len(done_appointments)
 
     s1, s2, s3 = st.columns(3)
     with s1:
@@ -541,24 +415,15 @@ def doctor_view() -> None:
 
     st.divider()
 
-    # Grid patients queue
     st.markdown("### 📋 My Queue")
-    active = sorted(
-        [a for a in st.session_state.appointments
-         if a.get("assigned_doctor_id") == doc["id"]
-         and a["status"] in ("waiting", "in_progress")],
-        key=lambda a: (0 if a["priority"] == "high" else 1, a["created_at"]),
-    )
-
-    if not active:
+    if not active_appointments:
         st.markdown(
             '<div class="es"><span class="esi">🩺</span><p>No patients in your queue.</p></div>',
             unsafe_allow_html=True,
         )
     else:
-        # Responsive 2-column grid layout for patient cards
-        for i in range(0, len(active), 2):
-            row = active[i:i + 2]
+        for i in range(0, len(active_appointments), 2):
+            row = active_appointments[i:i + 2]
             gcols = st.columns(2)
             for j, appt in enumerate(row):
                 with gcols[j]:
@@ -571,7 +436,6 @@ def _patient_card(appt: dict, doc: dict) -> None:
     pb = _pb(appt["priority"])
     wt = _wait(appt["created_at"])
 
-    # Custom HTML Card Structure
     st.markdown(f"""
 <div class="{cls}">
   <div class="card-row">
@@ -584,28 +448,26 @@ def _patient_card(appt: dict, doc: dict) -> None:
 </div>
 """, unsafe_allow_html=True)
 
-    # Standard expander for Notes
     with st.expander("Notes"):
         nk = f"n_{appt['id']}"
         if nk not in st.session_state:
-            st.session_state[nk] = appt.get("notes", "")
+            st.session_state[nk] = appt.get("notes") or ""
         notes = st.text_area("Clinical Notes", value=st.session_state[nk], height=75,
                              key=f"ta_{appt['id']}", label_visibility="collapsed")
         if notes != st.session_state[nk]:
-            st.session_state[nk] = notes
-            appt["notes"] = notes
-            st.toast("Notes saved.")
+            if update_appointment_notes(appt["id"], notes):
+                st.session_state[nk] = notes
+                appt["notes"] = notes
+                st.toast("Notes saved.")
 
-    # Standard seen button
     if st.button("✅ Mark Seen", key=f"ms_{appt['id']}", use_container_width=True):
-        appt["status"] = "done"
-        for d in st.session_state.doctors:
-            if d["id"] == doc["id"]:
-                d["status"] = "free"
-                doc["status"] = "free"
-        st.session_state.doctor = doc
-        st.toast(f"✅ {appt['patient_name']} marked as seen.")
-        st.rerun()
+        if mark_appointment_done(appt["id"], doc["doctor_id"], doc["name"]):
+            new_doc = get_doctor_by_name(doc["name"])
+            if new_doc:
+                new_doc["id"] = new_doc["doctor_id"]
+                st.session_state.doctor = new_doc
+            st.toast(f"✅ {appt['patient_name']} marked as seen.")
+            st.rerun()
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 
 def _doctor_login() -> None:
@@ -619,16 +481,29 @@ def _doctor_login() -> None:
                 unsafe_allow_html=True,
             )
             st.divider()
-            names = [d["name"] for d in st.session_state.doctors]
+            
+            doctors = get_all_doctors()
+            names = [d["name"] for d in doctors]
+            if not names:
+                st.warning("No doctors registered in database.")
+                return
+                
             sel = st.selectbox("Your name", names, key="dl_name")
             pwd = st.text_input("Password", type="password", key="dl_pwd", placeholder="Password")
             if st.button("Sign In →", use_container_width=True, key="dl_btn"):
                 if pwd.strip():
-                    doctor = next((dict(d) for d in st.session_state.doctors if d["name"] == sel), None)
-                    if doctor:
-                        st.session_state.doctor = doctor
-                        st.toast(f"Welcome, {doctor['name']}!")
-                        st.rerun()
+                    expected = config.DOCTOR_PASSWORDS.get(sel)
+                    if expected and pwd.strip() == expected:
+                        doctor = get_doctor_by_name(sel)
+                        if doctor:
+                            doctor["id"] = doctor["doctor_id"]
+                            st.session_state.doctor = doctor
+                            st.toast(f"Welcome, {doctor['name']}!")
+                            st.rerun()
+                        else:
+                            st.error("Profile lookup failed.")
+                    else:
+                        st.error("Invalid password.")
                 else:
                     st.error("Please enter password.")
 
@@ -642,7 +517,6 @@ def admin_view() -> None:
         _admin_login()
         return
 
-    # Admin Header
     ah1, ah2 = st.columns([6, 1])
     with ah1:
         st.markdown("### ⚙️ Manage Doctors")
@@ -652,7 +526,8 @@ def admin_view() -> None:
             st.toast("Admin signed out.")
             st.rerun()
 
-    # Add Doctor expander ABOVE the data editor table
+    db_doctors = get_all_doctors()
+
     with st.expander("➕ Add Doctor"):
         with st.form("add_doc_form"):
             fc1, fc2, fc3 = st.columns(3)
@@ -669,7 +544,7 @@ def admin_view() -> None:
         if add_btn:
             if not new_name.strip():
                 st.error("Doctor name is required.")
-            elif any(d["name"].lower() == new_name.strip().lower() for d in st.session_state.doctors):
+            elif any(d["name"].lower() == new_name.strip().lower() for d in db_doctors):
                 st.warning(f"'{new_name}' already exists in registry.")
             else:
                 start, end = "09:00", "17:00"
@@ -678,28 +553,30 @@ def admin_view() -> None:
                     if len(parts) == 2:
                         start, end = parts[0], parts[1]
 
-                st.session_state.doctors.append({
-                    "id": f"d{uuid.uuid4().hex[:6]}",
-                    "name": new_name.strip(),
-                    "ward": new_ward,
-                    "specialization": new_spec.strip() or SPEC_MAP.get(new_ward, "General Practice"),
-                    "shift_start": start,
-                    "shift_end": end,
-                    "status": "free",
-                })
-                st.toast(f"✅ {new_name.strip()} added successfully!")
-                st.rerun()
+                client = get_client()
+                try:
+                    client.table("doctors").insert({
+                        "name": new_name.strip(),
+                        "ward": new_ward,
+                        "specialization": new_spec.strip() or SPEC_MAP.get(new_ward, "General Practice"),
+                        "shift_start": start,
+                        "shift_end": end,
+                        "status": "free",
+                    }).execute()
+                    st.toast(f"✅ {new_name.strip()} added successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to add doctor: {e}")
 
-    # Doctor database inline editable editor table
     st.markdown("#### 👨‍⚕️ Doctor Database")
     df = pd.DataFrame([{
-        "ID": d["id"],
+        "ID": d["doctor_id"],
         "Name": d["name"],
         "Ward": d["ward"],
         "Specialization": d["specialization"],
         "Shift": f"{d['shift_start']} - {d['shift_end']}",
         "Status": d["status"],
-    } for d in st.session_state.doctors])
+    } for d in db_doctors])
 
     edited = st.data_editor(
         df,
@@ -713,43 +590,72 @@ def admin_view() -> None:
         },
     )
 
-    # Sync edited data_editor changes back
-    if edited is not None and len(edited) == len(st.session_state.doctors):
-        for i, (_, row) in enumerate(edited.iterrows()):
-            d = st.session_state.doctors[i]
-            d["id"] = row["ID"]
-            d["name"] = row["Name"]
-            d["ward"] = row["Ward"]
-            d["specialization"] = row["Specialization"]
+    if edited is not None:
+        for i, row in edited.iterrows():
+            d = db_doctors[i]
+            changed = {}
+            if row["Name"] != d["name"]:
+                changed["name"] = row["Name"]
+            if row["Ward"] != d["ward"]:
+                changed["ward"] = row["Ward"]
+            if row["Specialization"] != d["specialization"]:
+                changed["specialization"] = row["Specialization"]
+            if row["Status"] != d["status"]:
+                changed["status"] = row["Status"]
             
             shift_str = str(row["Shift"]).strip()
-            start, end = "09:00", "17:00"
+            start, end = d["shift_start"], d["shift_end"]
             if "-" in shift_str:
                 parts = [p.strip() for p in shift_str.split("-")]
                 if len(parts) == 2:
                     start, end = parts[0], parts[1]
-            d["shift_start"] = start
-            d["shift_end"] = end
-            d["status"] = row["Status"]
+            if start != d["shift_start"] or end != d["shift_end"]:
+                changed["shift_start"] = start
+                changed["shift_end"] = end
+                
+            if changed:
+                try:
+                    get_client().table("doctors").update(changed).eq("doctor_id", d["doctor_id"]).execute()
+                    if "status" in changed:
+                        get_client().table("status_log").insert({
+                            "doctor_id": d["doctor_id"],
+                            "old_status": d["status"],
+                            "new_status": changed["status"],
+                            "changed_by": "admin",
+                        }).execute()
+                    st.toast(f"Updated {d['name']}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to update doctor {d['name']}: {e}")
 
-    # Remove option
     with st.expander("🗑 Remove Doctor"):
-        rm_names = [d["name"] for d in st.session_state.doctors]
+        rm_names = [d["name"] for d in db_doctors]
         rm_sel = st.selectbox("Select doctor", rm_names, key="rm_sel")
         if st.button("Remove Doctor", key="rm_btn", type="secondary"):
-            st.session_state.doctors = [d for d in st.session_state.doctors if d["name"] != rm_sel]
-            st.toast(f"{rm_sel} removed.")
-            st.rerun()
+            try:
+                get_client().table("doctors").delete().eq("name", rm_sel).execute()
+                st.toast(f"{rm_sel} removed.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to remove doctor: {e}")
 
-    # Full appointments log
     st.divider()
     st.markdown("#### 📊 System Appointments log")
-    appts = st.session_state.appointments
+    try:
+        res = get_client().table("appointments").select("*").order("created_at", desc=True).execute()
+        appts = res.data or []
+    except Exception as e:
+        appts = []
+        st.error(f"Failed to fetch appointments: {e}")
+
     if not appts:
         st.info("No appointments yet.")
     else:
         def _dname(did: str) -> str:
-            return next((d["name"] for d in st.session_state.doctors if d["id"] == did), "Unassigned")
+            if not did:
+                return "Unassigned"
+            match = next((d["name"] for d in db_doctors if d["doctor_id"] == did), None)
+            return match or "Unassigned"
 
         adf = pd.DataFrame([{
             "Patient": a["patient_name"],
@@ -759,7 +665,7 @@ def admin_view() -> None:
             "Status": a["status"].replace("_", " ").title(),
             "Doctor": _dname(a.get("assigned_doctor_id", "")),
             "Queued": _wait(a["created_at"]),
-        } for a in sorted(appts, key=lambda x: x["created_at"], reverse=True)])
+        } for a in appts])
 
         st.dataframe(adf, use_container_width=True, hide_index=True)
 
@@ -796,7 +702,6 @@ def main() -> None:
         )
         st.markdown("---")
 
-        # Session badges
         if st.session_state.doctor:
             d = st.session_state.doctor
             st.markdown(f'{_sb(d["status"])}<p style="margin:.35rem 0 0;font-size:.8rem;color:var(--muted)">{d["name"]}</p>', unsafe_allow_html=True)
@@ -808,11 +713,16 @@ def main() -> None:
         else:
             st.markdown('<p style="font-size:.8rem;color:var(--muted)">⚙️ Admin: not logged in</p>', unsafe_allow_html=True)
 
-        # Quick stats counts
-        appts = st.session_state.appointments
-        wn = sum(1 for a in appts if a["status"] == "waiting")
-        an = sum(1 for a in appts if a["status"] == "in_progress")
-        dn = sum(1 for a in appts if a["status"] == "done")
+        # Fetch status stats dynamically from Supabase
+        try:
+            res = get_client().table("appointments").select("status").execute()
+            status_data = res.data or []
+            wn = sum(1 for a in status_data if a["status"] == "waiting")
+            an = sum(1 for a in status_data if a["status"] == "in_progress")
+            dn = sum(1 for a in status_data if a["status"] == "done")
+        except Exception:
+            wn, an, dn = 0, 0, 0
+
         st.markdown(
             f'<div style="margin-top:.75rem">'
             f'<p style="font-size:.72rem;color:var(--muted);margin:.15rem 0">⏳ Waiting: <strong style="color:var(--warning)">{wn}</strong></p>'
